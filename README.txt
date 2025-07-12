@@ -6,7 +6,7 @@ A complete YOLOv8-based pipeline for detecting **round objects** using standardi
 - Heuristic pre-labeling via circularity
 - Manual annotation UI
 - Training with Ultralytics YOLOv8
-- Inference on full images or tiled images
+- Inference on images
 - Scale bar detection for real-world measurements
 - Visualization and performance summaries
 
