@@ -1,4 +1,4 @@
-# YOLO Square Object Detection Pipeline
+# YOLO Object Detection Pipeline
 
 A complete YOLOv8-based pipeline for detecting **round objects** using standardized **square bounding boxes**. Includes:
 
