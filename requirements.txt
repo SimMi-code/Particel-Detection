@@ -1,0 +1,26 @@
+# requirements.txt
+
+ultralytics>=8.0.100
+opencv-python
+matplotlib
+numpy
+pandas
+PyYAML
+scikit-learn
+tqdm
+pytesseract
+
+Note:
+- tensorflow 2.19.0 requires numpy<2.2.0,>=1.26.0, but you have numpy 2.2.5 which is incompatible.
+- matplotlib.get_backend() cannot be "QtAgg" or "Qt5Agg" for non-interactive backend (no GUI)
+- disabled GPU support (requires cuda) by os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+If you plan to use pytesseract, make sure Tesseract OCR is installed on your system (not via pip):
+# Ubuntu
+sudo apt install tesseract-ocr
+
+# macOS
+brew install tesseract
+
+# Windows
+# Download from https://github.com/tesseract-ocr/tesseract

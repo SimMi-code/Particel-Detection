@@ -1,0 +1,18 @@
+# 1) Python byte‐compiled files and caches
+__pycache__/
+*.py[cod]
+*.so
+
+# 2) Virtual‐env or conda‐env folders
+venv/
+.env/
+
+# 3) Raw data / intermediate outputs you don’t want in Git
+*.bmp
+*.jpg
+*.png
+*.csv
+
+# 4) OS‐generated cruft
+.DS_Store
+
