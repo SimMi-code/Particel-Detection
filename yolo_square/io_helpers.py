@@ -35,7 +35,9 @@ def list_image_files(folder, extensions=(".jpg", ".jpeg", ".png", ".bmp")):
     for ext in extensions:
         pattern = os.path.join(folder, f"*{ext}")
         files.extend(glob.glob(pattern))
-    return sorted(files)
+    # return only the filename portion, so downstream code
+    # can safely do os.path.join(input_dir, basename)
+    return sorted(os.path.basename(p) for p in files)
 
 def load_image(path):
     """
@@ -60,14 +62,22 @@ def match_label_file(image_file, label_dir):
 
 def save_yolo_label(label_path, boxes):
     """
-    Write a list of YOLO‐format boxes to disk.
-    Each box tuple is (class_id, x_center, y_center, w, h).
+    Save YOLO‐style labels to disk.  Supports two formats of `boxes`:
+      - 4‐tuple: (xc, yc, w, h)  → writes "0 xc yc w h"
+      - 5‐tuple: (idx, xc, yc, w, h) → writes "idx xc yc w h"
+    All coords must already be normalized [0..1].
     """
-    ensure_dir(os.path.dirname(label_path))
     with open(label_path, "w") as f:
         for box in boxes:
-            cls, xc, yc, w, h = box
-            f.write(f"{cls} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}\n")
+            if len(box) == 5:
+                cls, xc, yc, w, h = box
+            elif len(box) == 4:
+                cls = 0
+                xc, yc, w, h = box
+            else:
+                raise ValueError(f"save_yolo_label: expected box of length 4 or 5, got {len(box)}")
+            f.write(f"{int(cls)} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}\n")
+
 
 def load_yolo_label(label_path):
     """
@@ -112,3 +122,21 @@ def get_latest_yolo_weights(project_dir="yolo_output"):
     print(f"🔍 Using weights: {latest}/weights/best.pt")
     return best
 
+def expand_to_tiles_for_images(
+    image_files: list[str],
+    split_dir: str,
+    exts: tuple = (".jpg", ".png", ".bmp")
+) -> list[str]:
+    """
+    Given a list of original image filenames (e.g. ["img1.bmp","img2.bmp"]),
+    finds all tiles in `split_dir` named like "img1_tile_*.jpg" (or .png/.bmp),
+    and returns the basenames of those tile files, sorted.
+    """
+    tiles = []
+    for img in image_files:
+        base, _ = os.path.splitext(img)
+        for ext in exts:
+            pattern = os.path.join(split_dir, f"{base}_tile*{ext}")
+            for p in glob.glob(pattern):
+                tiles.append(os.path.basename(p))
+    return sorted(tiles)

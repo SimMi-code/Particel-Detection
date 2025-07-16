@@ -7,16 +7,17 @@ matplotlib.use("Agg")
 
 from yolo_square.data_preparation import split_images_into_tiles_with_overlap, create_yolo_dataset_square, select_top_k_tiles_per_image
 from yolo_square.yolo_training import train_yolo_model
-from yolo_square.yolo_detection import detect_with_yolo, detect_full_with_tiles
-from yolo_square.scale_bar import detect_scale_bar
+from yolo_square.yolo_detection import detect_full_with_tiles
 from yolo_square.visualization import visualize_yolo_labels, update_yolo_viz, evaluate_detections
 from yolo_square.evaluation import evaluate_detections
 from yolo_square.labeling_ui import labeling_ui
 from yolo_square.io_helpers import get_image_filenames
+from yolo_square.self_learning import self_learning_loop
 
 def main():
     parser = argparse.ArgumentParser(description="YOLO Round Object Detection Pipeline (Square Mode)")
-    parser.add_argument("--mode", required=True, choices=["split", "heuristic", "train", "label", "viz", "viz_select", "detect-tiles", "evaluation"], help="Pipeline step to run")
+    parser.add_argument("--mode", required=True, choices=["split", "heuristic", "train", "label", "viz", "viz_select", 
+                                                          "detect-tiles", "evaluation", "self_learning"], help="Pipeline step to run")
     parser.add_argument("--input_dir", default="images", help="Directory with initial full images")
     parser.add_argument("--output_dir", default="images_split", help="Where to save tiles")
     parser.add_argument("--output_dir_detect", default="yolo_predictions", help="Where to save output from detection and evaluation")
@@ -32,16 +33,15 @@ def main():
     parser.add_argument("--cols", type=int, default=6, help="number of tile‐columns")
     parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshould for detections")
     parser.add_argument("--iou", type=float, default=0.5, help="Intersection-over-Union (IoU) cutoff (overlapping boxes threshould)")
-    parser.add_argument("--label-img-dir",
-        default="yolo_dataset_select/images",
-        help="Which folder of tile‐images to label")
-    parser.add_argument("--label-txt-dir",
-        default="yolo_dataset_select/labels",
-        help="Where the .txt files live")
+    parser.add_argument("--label-img-dir", default="yolo_dataset_select/images", help="Which folder of tile‐images to label")
+    parser.add_argument("--label-txt-dir", default="yolo_dataset_select/labels", help="Where the .txt files live")
+    parser.add_argument("--iterations", type=int, default=5, help="Number of self-learning iterations")
+
     args = parser.parse_args()
 
     inputnames_ = get_image_filenames(args.input_dir)
-    inputnames_ = inputnames_
+    inputnames_ = inputnames_#[:1]
+    print (f"inputnames_: {inputnames_}")
     if args.mode == "split":
 
         split_images_into_tiles_with_overlap(
@@ -120,9 +120,10 @@ def main():
                             rewrite_eval = False)
 
     elif args.mode == "label":
+
         labeling_ui(
-            image_folder=args.label_img_dir,
-            label_folder=args.label_txt_dir
+            image_folder="yolo_dataset_select/images", #args.label_img_dir,
+            label_folder="yolo_dataset_select/labels" #args.label_txt_dir
         )
         update_yolo_viz(
             dataset_dir="yolo_dataset_select",
@@ -136,6 +137,22 @@ def main():
             image_dir=join(args.dataset_dir, "images/train"),
             label_dir=join(args.dataset_dir, "labels/train"),
             output_dir=join(args.dataset_dir, "viz")
+        )
+    elif args.mode == "self_learning":
+        self_learning_loop(
+            inputnames_, 
+            iterations=args.iterations,
+            initial_model=None,
+            images_dir=args.input_dir,
+            initial_labels_dir=args.label_txt_dir,
+            conf_threshold=0.5,#args.conf,
+            epochs_per_iter=5,
+            device=args.device,
+            k = 8,
+            random_tiles = True,
+            rows=args.rows,
+            cols=args.cols,
+            overlap=args.overlap
         )
    
 if __name__ == "__main__":

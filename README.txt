@@ -28,7 +28,8 @@ project_root/
 │ ├── visualization.py # Visualization utilities
 │ ├── yolo_training.py # YOLOv8 training
 │ ├── yolo_detection.py # Detection on full/tiled images
-│ └── evaluation.py # Evaluating the yolo-detections
+│ ├── evaluation.py # Evaluating the yolo-detections
+│ └── self_learning.py # Using detected pseudo labels for further training
 │
 ├── main.py # Entry point for mode-based execution
 ├── requirements.txt
@@ -46,4 +47,5 @@ Run with:
     python main.py --mode viz
     python main.py --mode viz-select
     python main.py --mode evaluation
+    python main.py --mode self_learning
 

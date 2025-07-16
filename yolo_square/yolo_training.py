@@ -13,6 +13,7 @@ def train_yolo_model(
     imgsz=640,
     initial_lr=1e-3,
     final_lr_factor=0.2,
+    freeze: list[int] = None,
     project="yolo_output",
     name="exp",
     device="cpu",
@@ -48,6 +49,7 @@ def train_yolo_model(
         imgsz=imgsz,
         lr0=initial_lr,
         lrf=final_lr_factor,
+        freeze=freeze,
         project=project,
         name=name,
         exist_ok=overwrite,
@@ -63,6 +65,14 @@ def train_yolo_model(
         return save_dir
 
     print(f"📊 Training complete. Visualizing results from {results_csv}")
+
+    # Locate best.pt
+    run_dir = os.path.join(project, name)
+    best_pt = os.path.join(run_dir, "weights", "best.pt")
+    if not os.path.exists(best_pt):
+        raise FileNotFoundError(f"No best.pt found at {best_pt}")
+
+    print(f"✅ Training complete. Best weights at: {best_pt}")
     
     # Load results and plot training curves
     df = pd.read_csv(results_csv)
@@ -127,4 +137,4 @@ def train_yolo_model(
     else:
         print(f"⚠️  No args.yaml found in {save_dir}; cannot report batch/LR etc.")
 
-    return save_dir
+    return best_pt

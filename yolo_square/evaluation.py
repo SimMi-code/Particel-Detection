@@ -2,6 +2,7 @@
 
 import os
 import glob
+import shutil
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,6 +11,8 @@ from torchvision.ops import nms
 from .scale_bar import detect_scale_bar
 from .box_utils import snap_xywh_to_square, square_to_xyxy
 from .io_helpers import ensure_dir
+from .yolo_detection import detect_full_with_tiles
+
 
 def count_gt_labels(gt_label_dir: str, base: str) -> int:
     """
@@ -224,3 +227,215 @@ def evaluate_detections(
     plt.close()
     print(f"✅ Saved overall confidence & ratio → overall_conf_ratio.png")
 
+def _compute_iou(boxA, boxB):
+    """
+    Compute IoU between two boxes in [x1,y1,x2,y2] format.
+    """
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    interW = max(0, xB - xA)
+    interH = max(0, yB - yA)
+    inter = interW * interH
+    areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    union = areaA + areaB - inter
+    return 0.0 if union == 0 else inter / union
+
+
+def evaluate_iteration(
+    iteration: int,
+    bases: list[str],
+    prev_weights: str,
+    new_weights: str,
+    images_dir: str,
+    device: str,
+    history_counts: dict[str, list[int]],
+    history_overall: list[int],
+    history_confidences: dict[str, list[float]],
+    history_mean_conf: list[float],    
+    output_dir: str,
+    tile_size: int = 640,
+    overlap: float = 0.2,
+    conf_threshold: float = 0.25,
+    iou_threshold: float = 0.5,
+    cached_prev_detect: str = None,
+):
+    """
+    After iteration N, run `detect_full_with_tiles` on all `bases` images
+    with both the previous and the newly trained weights, parse their
+    detections_raw.txt, find which boxes are truly new (IoU≤0.5), and:
+
+      • Write a composite image for each base (blue=old, green=new, red=added).
+      • Update history_counts[base].append(n_new) and history_overall.
+      • Plot per-image & total‐detections vs iteration.
+
+    This never passes an ndarray to `detect_full_with_tiles`, only filenames.
+    """
+
+    # 1) prepare eval folders
+    eval_dir = os.path.join(output_dir, f"iter{iteration}_eval")
+    prev_dir = os.path.join(eval_dir, "prev_detect")
+    new_dir  = os.path.join(eval_dir, "new_detect")
+    ensure_dir(prev_dir)
+    ensure_dir(new_dir)
+
+    # 2) build list of actual filenames and remember each base's extension
+    full_names = []
+    ext_map    = {}
+    for base in bases:
+        for ext in (".jpg", ".png", ".bmp"):
+            fn = base + ext
+            if os.path.exists(os.path.join(images_dir, fn)):
+                full_names.append(fn)
+                ext_map[base] = ext
+                break
+        else:
+            print(f"⚠️  [iter {iteration}] Image for {base} not found, skipping.")
+
+    # # 3) run detection with the old weights
+    # detect_full_with_tiles(
+    #     full_names,
+    #     model_path=prev_weights,
+    #     input_dir=images_dir,
+    #     output_dir=prev_dir,
+    #     tile_size=tile_size,
+    #     overlap=overlap,
+    #     conf_threshold=conf_threshold,
+    #     iou_threshold=iou_threshold,
+    #     device=device,
+    # )
+    # 3) either copy cached prev results, or run detection
+    if cached_prev_detect and os.path.isdir(cached_prev_detect):
+        shutil.copytree(cached_prev_detect, prev_dir, dirs_exist_ok=True)
+    else:
+        detect_full_with_tiles(
+            full_names,
+            model_path=prev_weights,
+            input_dir=images_dir,
+            output_dir=prev_dir,
+            tile_size=tile_size,
+            overlap=overlap,
+            conf_threshold=conf_threshold,
+            iou_threshold=iou_threshold,
+            device=device,
+        )
+
+    # 4) run detection with the new weights
+    detect_full_with_tiles(
+        full_names,
+        model_path=new_weights,
+        input_dir=images_dir,
+        output_dir=new_dir,
+        tile_size=tile_size,
+        overlap=overlap,
+        conf_threshold=conf_threshold,
+        iou_threshold=iou_threshold,
+        device=device,
+    )
+
+    counts_this = []
+
+    # 5) for each image, parse detections_raw.txt from both runs
+    for base in bases:
+        prev_txt = os.path.join(prev_dir, base, "detections_raw.txt")
+        prev_boxes = []
+        if os.path.exists(prev_txt):
+            with open(prev_txt) as f:
+                next(f)  # skip header
+                for line in f:
+                    _, x1, y1, x2, y2, _ = line.split()
+                    prev_boxes.append([int(x1), int(y1), int(x2), int(y2)])
+
+        new_txt = os.path.join(new_dir, base, "detections_raw.txt")
+        new_boxes = []
+        new_confs = []
+        if os.path.exists(new_txt):
+            with open(new_txt) as f:
+                next(f)
+                for line in f:
+                    _, x1, y1, x2, y2, conf = line.split()
+                    new_boxes.append([int(x1), int(y1), int(x2), int(y2)])
+                    new_confs.append(float(conf))
+
+        n_new     = len(new_boxes)
+        avg_conf  = float(np.mean(new_confs)) if new_confs else 0.0
+
+        history_counts.setdefault(base, []).append(n_new)
+        history_confidences.setdefault(base, []).append(avg_conf)
+        counts_this.append(n_new)
+
+        # find truly *added* boxes (IoU ≤ 0.5 with every old box)
+        added = [
+            nb for nb in new_boxes
+            if all(_compute_iou(nb, ob) <= 0.5 for ob in prev_boxes)
+        ]
+
+        # draw composite: blue=old, green=new, red=added
+        img = cv2.imread(os.path.join(images_dir, base + ext_map.get(base, "")))
+        vis = img.copy()
+        for x1,y1,x2,y2 in prev_boxes:
+            cv2.rectangle(vis, (x1,y1), (x2,y2), (255, 0,   0), 2)
+        for x1,y1,x2,y2 in new_boxes:
+            cv2.rectangle(vis, (x1,y1), (x2,y2), (0,   255, 0), 2)
+        for x1,y1,x2,y2 in added:
+            cv2.rectangle(vis, (x1,y1), (x2,y2), (0,   0, 255), 2)
+
+        out_img = os.path.join(eval_dir, f"{base}_iter{iteration}_compare.jpg")
+        cv2.imwrite(out_img, vis)
+        print(f"🔍 [iter {iteration}] {base}: {n_new} dets, +{len(added)} new → {out_img}")
+
+    # 6) update overall
+    total_this = sum(counts_this)
+    history_overall.append(total_this)
+
+    # overall mean confidence this iteration
+    mean_conf_this = float(
+        sum(history_confidences[b][-1] for b in bases) / len(bases)
+    )
+    history_mean_conf.append(mean_conf_this)
+
+    # 7) plot per‐image counts vs iteration
+    its = list(range(0, iteration + 1))
+    plt.figure(figsize=(10, 6))
+    for base in bases:
+        plt.plot(its, history_counts[base], marker="o", label=base)
+    plt.xlabel("Iteration")
+    plt.ylabel("Detections")
+    plt.title("Detections per Image over Iterations")
+    plt.legend()
+    plt.tight_layout()
+    fn = os.path.join(eval_dir, f"iter{iteration}_per_image_counts.png")
+    plt.savefig(fn)
+    plt.close()
+    print(f"✅ Saved per-image chart → {fn}")
+
+    # 8) plot total detections vs iteration
+    plt.figure(figsize=(6, 4))
+    plt.plot(its, history_overall, marker="s", color="black")
+    plt.xlabel("Iteration")
+    plt.ylabel("Total Detections")
+    plt.title("Total Detections over Iterations")
+    plt.tight_layout()
+    fn = os.path.join(eval_dir, f"iter{iteration}_total_counts.png")
+    plt.savefig(fn)
+    plt.close()
+    print(f"✅ Saved total‐detections chart → {fn}")
+
+    # 9) plot average confidence per image & mean vs iteration
+    its = list(range(0, iteration + 1))  # or range(1, iteration+1) to match your counts
+    plt.figure(figsize=(10, 6))
+    for base in bases:
+        plt.plot(its, history_confidences[base], marker="o", label=base)
+    plt.plot(its, history_mean_conf, marker="s", linewidth=2,
+             label="Mean Avg Confidence", color="black")
+    plt.xlabel("Iteration")
+    plt.ylabel("Average Confidence")
+    plt.title("Average Confidence per Image over Iterations")
+    plt.legend()
+    plt.tight_layout()
+    fn = os.path.join(eval_dir, f"iter{iteration}_avg_confidences.png")
+    plt.savefig(fn)
+    plt.close()
+    print(f"✅ Saved avg‐confidence chart → {fn}")

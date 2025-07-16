@@ -6,6 +6,7 @@ import shutil
 import cv2
 import yaml
 import re
+import random
 import numpy as np
 from sklearn.model_selection import train_test_split
 from .io_helpers import list_image_files
@@ -18,7 +19,7 @@ from .visualization import update_yolo_viz
 
 def detect_contours_canny(image, canny_min=50, canny_max=150, blur_kernel=(5,5)):
     """
-    Simple Canny‐based contour detector.
+    Simple Canny-based contour detector.
     """
     gray    = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, blur_kernel, 0)
@@ -36,8 +37,8 @@ def compute_circularity(contour):
 
 def auto_tune_parameters(image, circularity_min=0.7, circularity_max=1.2):
     """
-    Grid‐search over blur kernels & Canny thresholds to maximize
-      (# round‐like contours) + 0.1·(sum circularity) − 0.01·(total contours).
+    Grid-search over blur kernels & Canny thresholds to maximize
+      (# round-like contours) + 0.1·(sum circularity) − 0.01·(total contours).
     Returns: (best_blur_kernel, best_canny_min, best_canny_max)
     """
     blur_options  = [(5,5),(7,7),(9,9)]
@@ -65,7 +66,7 @@ def auto_tune_parameters(image, circularity_min=0.7, circularity_max=1.2):
                 best_cfg   = (bk, cmin, cmax)
 
     bk, cmin, cmax = best_cfg
-    print(f"🧠 Auto‐tune → blur={bk}, canny=({cmin},{cmax})")
+    print(f"🧠 Auto-tune → blur={bk}, canny=({cmin},{cmax})")
     return bk, cmin, cmax
 
 def split_images_into_tiles_with_overlap(
@@ -77,7 +78,7 @@ def split_images_into_tiles_with_overlap(
 ):
     """
     Split each image into `rows × cols` tiles that overlap by `overlap` fraction.
-    Tiles are arranged in a sliding‐window grid of size rows×cols,
+    Tiles are arranged in a sliding-window grid of size rows×cols,
     but shifted so that every row/column covers the full image.
     """
     os.makedirs(output_folder, exist_ok=True)
@@ -94,7 +95,7 @@ def split_images_into_tiles_with_overlap(
         # Compute nominal tile size
         tile_h = H / rows
         tile_w = W / cols
-        # Compute step between tile top‐left corners
+        # Compute step between tile top-left corners
         step_h = int(tile_h * (1 - overlap))
         step_w = int(tile_w * (1 - overlap))
         # Ensure we cover the entire image: we'll clamp at the bottom/right edges
@@ -106,7 +107,7 @@ def split_images_into_tiles_with_overlap(
 
         for r in range(rows):
             for c in range(cols):
-                # nominal top‐left
+                # nominal top-left
                 y1 = r * step_h
                 x1 = c * step_w
                 # clamp so tile fits within image
@@ -138,7 +139,7 @@ def create_yolo_dataset_square(
     auto_tune=True
 ):
     """
-    Heuristic YOLO‐style dataset creation using *square* bboxes.
+    Heuristic YOLO-style dataset creation using *square* bboxes.
     Writes:
       {dataset_dir}/labels/*.txt   ← YOLO .txt files
       {dataset_dir}/viz/*.jpg      ← visualization overlays
@@ -273,8 +274,72 @@ def select_top_k_tiles_per_image(
                 shutil.copy(src_lbl, dst_lbl)
         print(f"✅ {base}: found {len(tile_counts)} tiles, selected top {min(k, len(tile_counts))}")
 
-    print(f"\n🎉 Finished selecting top‐{k} tiles per image into: {output_sel}")
+    print(f"\n🎉 Finished selecting top-{k} tiles per image into: {output_sel}")
 
+def select_random_k_tiles_per_image(
+    inputnames_,
+    split_dir="images_split",
+    label_dir="yolo_dataset/labels",
+    k=5,
+    output_sel="yolo_dataset_select_random"
+):
+    """
+    For each base image in `inputnames_`, finds its tile-labels in `label_dir`
+    matching "{base}_tile_r*_c*.txt", picks a random set of k (or fewer if 
+    not enough), and copies both the .jpg tile and its .txt label into
+    `output_sel/{images,labels}`.
+
+    BEFORE doing so, if `output_sel` already exists, it is versioned:
+    - yolo_dataset_select_random → yolo_dataset_select_random_v1 (or v2, v3, …)
+    - then the old `output_sel` is removed.
+    """
+
+    # 1) Version the existing output_sel, if present
+    if os.path.isdir(output_sel):
+        parent, name = os.path.split(output_sel)
+        pattern = re.compile(re.escape(name) + r"_v(\d+)$")
+        existing = []
+        for entry in os.listdir(parent or "."):
+            m = pattern.match(entry)
+            if m:
+                existing.append(int(m.group(1)))
+        next_v = max(existing, default=0) + 1
+        backup = f"{output_sel}_v{next_v}"
+        print(f"📦 Backing up '{output_sel}' → '{backup}'")
+        shutil.copytree(output_sel, backup)
+        shutil.rmtree(output_sel)
+        print("✅ Backup complete, old selection cleared.")
+
+    # 2) Prepare fresh directories
+    img_out = os.path.join(output_sel, "images")
+    lbl_out = os.path.join(output_sel, "labels")
+    os.makedirs(img_out, exist_ok=True)
+    os.makedirs(lbl_out, exist_ok=True)
+
+    # 3) For each original image, pick k random tiles
+    for inputname in inputnames_:
+        base = os.path.splitext(inputname)[0]
+        pattern = os.path.join(label_dir, f"{base}_tile_r*_c*.txt")
+        all_lbls = sorted(glob.glob(pattern))
+        if not all_lbls:
+            print(f"⚠️  No tile-labels found for '{base}' in {label_dir}")
+            continue
+
+        # choose k random (without replacement)
+        chosen = random.sample(all_lbls, min(k, len(all_lbls)))
+
+        # copy each selected tile
+        for lbl_path in chosen:
+            tile_name = os.path.splitext(os.path.basename(lbl_path))[0]
+            src_img = os.path.join(split_dir, tile_name + ".jpg")
+            dst_img = os.path.join(img_out,      tile_name + ".jpg")
+            dst_lbl = os.path.join(lbl_out,      tile_name + ".txt")
+            if os.path.exists(src_img):
+                shutil.copy(src_img, dst_img)
+                shutil.copy(lbl_path, dst_lbl)
+        print(f"✅ {base}: found {len(all_lbls)} tiles, selected {len(chosen)} at random")
+
+    print(f"\n🎉 Finished selecting random-{k} tiles per image into: {output_sel}")
 
 def prepare_selected_yolo_dataset(
     selected_root: str,
@@ -283,7 +348,7 @@ def prepare_selected_yolo_dataset(
 ) -> str:
     """
     Given a folder containing:
-      selected_root/images/*.jpg
+      selected_root/images/*.jpg/.png/.bmp
       selected_root/labels/*.txt
     1) Prints per-original-image & overall label statistics
     2) Splits into train/val under:
@@ -298,26 +363,26 @@ def prepare_selected_yolo_dataset(
         raise FileNotFoundError(f"Expecting {img_src} and {lbl_src} to exist")
 
     # 1) gather all image basenames (without extension)
-    img_paths = list_image_files(img_src)
+    img_paths = list_image_files(img_src)  
+    # -- fix: convert full paths → basenames (no ext) --
     bases = [os.path.splitext(os.path.basename(p))[0] for p in img_paths]
     if not bases:
         raise RuntimeError(f"No images found in {img_src}")
 
     # --- NEW BLOCK: compute per-original-image & overall stats ---
-    # group tiles by original image name (prefix before '_tile')
     stats = {}
     for b in bases:
         orig = b.split("_tile", 1)[0]
         lbl_file = os.path.join(lbl_src, b + ".txt")
         count = 0
         if os.path.exists(lbl_file):
-            with open(lbl_file) as f:
+            with open(lbl_file, "r") as f:
                 count = sum(1 for _ in f)
         stats.setdefault(orig, []).append(count)
 
     total_tiles  = 0
     total_labels = 0
-    print("\n🔍 Selected‐tile label counts by original image:")
+    print("\n🔍 Selected-tile label counts by original image:")
     for orig, counts in stats.items():
         n_tiles = len(counts)
         sum_lbl = sum(counts)
@@ -347,14 +412,14 @@ def prepare_selected_yolo_dataset(
     # 4) copy into the proper folders
     def _copy(subset, split_name):
         for b in subset:
-            # image: try any extension
+            # copy image (always to .jpg in destination)
             for ext in (".jpg", ".png", ".bmp"):
-                src = os.path.join(img_src, b + ext)
-                if os.path.exists(src):
-                    dst = os.path.join(selected_root, "images", split_name, b + ".jpg")
-                    shutil.copy(src, dst)
+                src_img = os.path.join(img_src, b + ext)
+                if os.path.exists(src_img):
+                    dst_img = os.path.join(selected_root, "images", split_name, b + ".jpg")
+                    shutil.copy(src_img, dst_img)
                     break
-            # label
+            # copy label
             src_lbl = os.path.join(lbl_src, b + ".txt")
             if os.path.exists(src_lbl):
                 dst_lbl = os.path.join(selected_root, "labels", split_name, b + ".txt")
@@ -378,5 +443,4 @@ def prepare_selected_yolo_dataset(
     print(f"   • train: {len(train_b)}, val: {len(val_b)}")
     print(f"   • data.yaml → {out_yaml}\n")
 
-    return out_yaml
     return out_yaml

@@ -12,6 +12,88 @@ from .box_utils import snap_xywh_to_square, square_to_xyxy, touches_border
 from .scale_bar import detect_scale_bar
 from .io_helpers  import get_latest_yolo_weights, ensure_dir
 
+def detect_with_yolo(
+    inputnames_:      list[str],
+    model_path:       str   = None,
+    input_dir:        str   = "images",
+    output_dir:       str   = "yolo_predictions/full_detection",
+    conf_threshold:   float = 0.25,
+    device:           str   = "cpu"
+):
+    """
+    Tile‐level YOLOv8 inference for self‐learning.
+
+    Args:
+        inputnames_:    list of tile filenames (e.g. ['img1_tile_r0_c0.jpg', ...])
+        model_path:     path to .pt weights, or None to auto-pick latest best.pt
+        input_dir:      where to read those tiles
+        output_dir:     root: writes `labels/` and `images/` sub-folders
+        conf_threshold: drop anything below this
+        device:         'cpu' or 'cuda'
+    """
+    # 1) prepare output folders
+    ensure_dir(output_dir)
+    labels_dir = os.path.join(output_dir, "labels")
+    imgs_out   = os.path.join(output_dir, "images")
+    ensure_dir(labels_dir)
+    ensure_dir(imgs_out)
+
+    # 2) load model
+    if model_path is None:
+        from .data_preparation import get_latest_yolo_weights
+        model_path = get_latest_yolo_weights("yolo_output")
+    model = YOLO(model_path)
+    print(f"🔍 Tile‐level detection with: {model_path}")
+
+    # 3) loop tiles
+    for tile_name in inputnames_:
+        in_path  = os.path.join(input_dir, tile_name)
+        img      = cv2.imread(in_path)
+        if img is None:
+            print(f"⚠️  Cannot read tile: {in_path}")
+            continue
+
+        # run YOLO
+        results = model.predict(
+            source=in_path,
+            conf=conf_threshold,
+            device=device,
+            verbose=False
+        )[0]
+
+        H, W = img.shape[:2]
+        lines = []
+        for (cx, cy, w, h), conf in zip(
+                results.boxes.xywh.cpu().numpy(),
+                results.boxes.conf.cpu().numpy()
+        ):
+            # snap to square
+            sq_cx, sq_cy, sq_side = snap_xywh_to_square(cx, cy, w, h)
+            # drop border-touchers
+            if touches_border(sq_cx, sq_cy, sq_side, img.shape):
+                continue
+            # pixel coords
+            x1, y1, x2, y2 = square_to_xyxy(sq_cx, sq_cy, sq_side)
+            # normalize to YOLO
+            xc = (x1 + sq_side/2) / W
+            yc = (y1 + sq_side/2) / H
+            sn = sq_side / W     # width_norm = height_norm
+            lines.append(f"0 {xc:.6f} {yc:.6f} {sn:.6f} {sn:.6f}")
+
+        # save tile‐level .txt
+        base = os.path.splitext(tile_name)[0]
+        out_lbl = os.path.join(labels_dir, base + ".txt")
+        with open(out_lbl, "w") as f:
+            f.write("\n".join(lines))
+
+        # copy tile image for SL pipeline
+        cv2.imwrite(os.path.join(imgs_out, tile_name), img)
+
+        print(f"✅ [{tile_name}] → {len(lines)} labels")
+
+    print(f"\n✅ Tile detections saved under → {output_dir}/labels & /images")
+    
+
 
 def detect_full_with_tiles(
     inputnames_,

@@ -31,12 +31,21 @@ def labeling_ui(
     viz_folder = os.path.join(os.path.dirname(label_folder), "viz")
     ensure_dir(viz_folder)
 
-    img_paths = list_image_files(image_folder)
-    if not img_paths:
+    # img_paths = list_image_files(image_folder)
+    # if not img_paths:
+    #     print("❌ No images found in", image_folder)
+    #     return
+
+    # for img_path in img_paths:
+    
+    files = list_image_files(image_folder)
+    if not files:
         print("❌ No images found in", image_folder)
         return
 
-    for img_path in img_paths:
+    for fname in files:
+        # build the full path before reading
+        img_path = fname if os.path.isabs(fname) else os.path.join(image_folder, fname)
         img = cv2.imread(img_path)
         if img is None:
             continue
